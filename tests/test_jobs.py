@@ -46,6 +46,13 @@ def test_destination_next_to_source(tmp_path: Path) -> None:
     assert destination_for(pdf, None, None) == tmp_path / "nested" / "book.epub"
 
 
+def test_convert_many_accepts_quality_kwargs(tmp_path: Path) -> None:
+    pdf = _make_pdf(tmp_path / "river.pdf")
+    results = convert_many([pdf], output=tmp_path / "river.epub", ocr=False, use_cache=False)
+    assert results[0].output == tmp_path / "river.epub"
+    assert results[0].error is None
+
+
 def test_should_skip_requires_newer_epub(tmp_path: Path) -> None:
     pdf = tmp_path / "book.pdf"
     epub_path = tmp_path / "book.epub"

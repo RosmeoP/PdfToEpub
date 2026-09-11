@@ -78,6 +78,8 @@ def convert_one(
     include_images: bool = True,
     skip_existing: bool = False,
     progress: ProgressFn | None = None,
+    ocr: bool = True,
+    use_cache: bool = True,
 ) -> JobResult:
     destination = destination_for(pdf, output, out_dir)
     if should_skip(pdf, destination, skip_existing):
@@ -91,6 +93,8 @@ def convert_one(
             include_images=include_images,
             source_name=pdf.name,
             progress=progress,
+            ocr=ocr,
+            use_cache=use_cache,
         )
     except ConversionError as exc:
         return JobResult(source=pdf, error=str(exc))
@@ -107,6 +111,8 @@ def convert_many(
     include_images: bool = True,
     skip_existing: bool = False,
     progress: ProgressFn | None = None,
+    ocr: bool = True,
+    use_cache: bool = True,
 ) -> list[JobResult]:
     single_output: Path | None = None
     if output is not None:
@@ -131,6 +137,8 @@ def convert_many(
                 include_images=include_images,
                 skip_existing=skip_existing,
                 progress=_scale_progress(progress, index, len(pdfs)) if progress else None,
+                ocr=ocr,
+                use_cache=use_cache,
             )
         )
     return results

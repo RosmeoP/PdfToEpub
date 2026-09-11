@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import html
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pymupdf
 
-from pdftoepub.progress import ProgressFn, report
+from pdftoepub.cache import cache_get, cache_put, extract_cache_key
+from pdftoepub.layout import PageUnit, cells_from_spans, layout_page
 from pdftoepub.models import (
     Block,
     Chapter,
@@ -17,6 +19,8 @@ from pdftoepub.models import (
     EncryptedPdfError,
     ImageAsset,
 )
+from pdftoepub.ocr import ocr_page, page_needs_ocr
+from pdftoepub.progress import ProgressFn, report
 
 _SENTENCE_END = tuple(".?!…\"”’")
 _HEADER_BAND = 0.09
@@ -32,16 +36,21 @@ _IMAGE_EXTS = {
     "bmp": "image/bmp",
     "webp": "image/webp",
 }
+_PREVIEW_BLOCKS = 8
+_PREVIEW_PARA_CHARS = 500
+_COVER_MIN_EDGE = 160
+_COVER_MIN_AREA = 160 * 200
 
 
 @dataclass
 class _Line:
     text: str
-    size: int
+    size: float
     bbox: tuple[float, float, float, float]
     page_index: int
     page_height: float
     flags: int
+    cells: list[tuple[float, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +60,7 @@ class _PageItem:
     kind: str
     line: _Line | None = None
     image: ImageAsset | None = None
+    page_width: float = 612.0
 
 
 def extract_document(
@@ -61,62 +71,129 @@ def extract_document(
     include_images: bool = True,
     source_name: str = "",
     progress: ProgressFn | None = None,
+    ocr: bool = True,
+    use_cache: bool = True,
 ) -> Document:
+    """Extract a PDF into a Document.
+
+    ``ocr`` tries Tesseract/pytesseract on pages with little text when those
+    extras are installed; otherwise the usual image-page fallback is used.
+    """
+    cache_key = ""
+    if use_cache:
+        try:
+            cache_key = extract_cache_key(
+                source,
+                include_images=include_images,
+                ocr=ocr,
+                source_name=source_name,
+            )
+        except OSError:
+            cache_key = ""
+        if cache_key:
+            cached = cache_get(cache_key)
+            if cached is not None:
+                report(progress, 84, "Using cached extraction…")
+                return _apply_overrides(cached, title, author)
+
     report(progress, 4, "Opening PDF…")
     doc = _open_pdf(source)
     try:
-        meta = doc.metadata or {}
-        page_count = doc.page_count
-        if page_count == 0:
-            raise EmptyDocumentError("The PDF has no pages.")
-
-        images: list[ImageAsset] = []
-        items: list[_PageItem] = []
-        image_index = 0
-        report(progress, 8, f"Reading {page_count} page{'s' if page_count != 1 else ''}…")
-
-        for page_index, page in enumerate(doc):
-            page_items, image_index = _extract_page(
-                doc, page, page_index, image_index, include_images
-            )
-            items.extend(page_items)
-            for item in page_items:
-                if item.image is not None:
-                    images.append(item.image)
-            percent = 8 + int((page_index + 1) / page_count * 67)
-            report(progress, percent, f"Reading page {page_index + 1} of {page_count}…")
-
-        report(progress, 78, "Cleaning headers and rebuilding paragraphs…")
-        lines = [item.line for item in items if item.line is not None]
-        repeats = _repeated_running_text(lines, page_count)
-        body_size = _body_font_size(lines)
-        heading_sizes = _heading_sizes(lines, body_size)
-
-        blocks = _items_to_blocks(items, repeats, body_size, heading_sizes)
-        if not blocks:
-            raise EmptyDocumentError("No readable text or images were found in this PDF.")
-
-        report(progress, 84, "Building chapters…")
-        chapters = _split_chapters(blocks)
-        has_text = any(b.kind in {"heading", "paragraph"} and b.text.strip() for b in blocks)
-
-        resolved_title = (title or "").strip() or _clean_meta(meta.get("title")) or _guess_title(
-            chapters, source_name
-        )
-        resolved_author = (author or "").strip() or _clean_meta(meta.get("author")) or "Unknown"
-
-        return Document(
-            title=resolved_title,
-            author=resolved_author,
-            language=_language_from_meta(meta),
-            page_count=page_count,
-            chapters=chapters,
-            images=images,
-            has_text=has_text,
+        document = _extract_open_document(
+            doc,
+            title=None,
+            author=None,
+            include_images=include_images,
             source_name=source_name,
+            progress=progress,
+            ocr=ocr,
         )
     finally:
         doc.close()
+
+    if cache_key:
+        cache_put(cache_key, document)
+    return _apply_overrides(document, title, author)
+
+
+def _extract_open_document(
+    doc: pymupdf.Document,
+    *,
+    title: str | None,
+    author: str | None,
+    include_images: bool,
+    source_name: str,
+    progress: ProgressFn | None,
+    ocr: bool,
+) -> Document:
+    meta = doc.metadata or {}
+    page_count = doc.page_count
+    if page_count == 0:
+        raise EmptyDocumentError("The PDF has no pages.")
+
+    images: list[ImageAsset] = []
+    laid_out: list[PageUnit | Block] = []
+    image_index = 0
+    report(progress, 8, f"Reading {page_count} page{'s' if page_count != 1 else ''}…")
+
+    for page_index, page in enumerate(doc):
+        page_units, image_index = _extract_page(
+            doc, page, page_index, image_index, include_images, ocr=ocr
+        )
+        laid_out.extend(page_units)
+        for item in page_units:
+            if isinstance(item, PageUnit) and item.image is not None:
+                images.append(item.image)
+        percent = 8 + int((page_index + 1) / page_count * 67)
+        report(progress, percent, f"Reading page {page_index + 1} of {page_count}…")
+
+    report(progress, 78, "Cleaning headers and rebuilding paragraphs…")
+    lines = [
+        _line_from_unit(item)
+        for item in laid_out
+        if isinstance(item, PageUnit) and item.kind == "text"
+    ]
+    repeats = _repeated_running_text(lines, page_count)
+    body_size = _body_font_size(lines)
+    heading_sizes = _heading_sizes(lines, body_size)
+
+    blocks = _items_to_blocks(laid_out, repeats, body_size, heading_sizes)
+    if not blocks:
+        raise EmptyDocumentError("No readable text or images were found in this PDF.")
+
+    report(progress, 84, "Building chapters…")
+    chapters = _split_chapters(blocks)
+    has_text = any(
+        (block.kind in {"heading", "paragraph"} and block.text.strip())
+        or (block.kind == "table" and (block.rows or block.text.strip()))
+        for block in blocks
+    )
+    cover = _choose_cover(doc, images)
+
+    resolved_title = (title or "").strip() or _clean_meta(meta.get("title")) or _guess_title(
+        chapters, source_name
+    )
+    resolved_author = (author or "").strip() or _clean_meta(meta.get("author")) or "Unknown"
+
+    return Document(
+        title=resolved_title,
+        author=resolved_author,
+        language=_language_from_meta(meta),
+        page_count=page_count,
+        chapters=chapters,
+        images=images,
+        has_text=has_text,
+        source_name=source_name,
+        cover=cover,
+    )
+
+
+def _apply_overrides(document: Document, title: str | None, author: str | None) -> Document:
+    if title and title.strip():
+        document.title = title.strip()
+    if author and author.strip():
+        document.author = author.strip()
+    return document
 
 
 def _open_pdf(source: Path | str | bytes) -> pymupdf.Document:
@@ -140,8 +217,10 @@ def _extract_page(
     page_index: int,
     image_index: int,
     include_images: bool,
-) -> tuple[list[_PageItem], int]:
+    ocr: bool = True,
+) -> tuple[list[PageUnit | Block], int]:
     page_height = float(page.rect.height)
+    page_width = float(page.rect.width)
     raw = page.get_text("dict", flags=pymupdf.TEXTFLAGS_DICT)
     items: list[_PageItem] = []
     used_xrefs: set[int] = set()
@@ -153,7 +232,15 @@ def _extract_page(
                 if parsed is None:
                     continue
                 x0, y0, _, _ = parsed.bbox
-                items.append(_PageItem(y=y0 + page_index * 10_000, x=x0, kind="text", line=parsed))
+                items.append(
+                    _PageItem(
+                        y=y0 + page_index * 10_000,
+                        x=x0,
+                        kind="text",
+                        line=parsed,
+                        page_width=page_width,
+                    )
+                )
         elif include_images and block.get("type") == 1:
             asset, image_index, xref = _image_from_block(doc, page, block, image_index)
             if asset is None:
@@ -161,14 +248,107 @@ def _extract_page(
             if xref is not None:
                 used_xrefs.add(xref)
             x0, y0, _, _ = block.get("bbox", (0, 0, 0, 0))
-            items.append(_PageItem(y=y0 + page_index * 10_000, x=x0, kind="image", image=asset))
+            items.append(
+                _PageItem(
+                    y=y0 + page_index * 10_000,
+                    x=x0,
+                    kind="image",
+                    image=asset,
+                    page_width=page_width,
+                )
+            )
 
     if include_images:
         extras, image_index = _remaining_images(doc, page, page_index, image_index, used_xrefs)
+        for extra in extras:
+            extra.page_width = page_width
         items.extend(extras)
 
+    page_text = " ".join(item.line.text for item in items if item.line is not None)
+    if ocr and page_needs_ocr(page_text):
+        ocr_items = _items_from_ocr(page, page_index, page_height, page_width)
+        if ocr_items:
+            images_only = [item for item in items if item.image is not None]
+            items = images_only + ocr_items
+
     items.sort(key=lambda item: (round(item.y, 1), round(item.x, 1)))
-    return items, image_index
+    units = [_unit_from_item(item, page_width) for item in items]
+    return layout_page(units, page_width), image_index
+
+
+def _items_from_ocr(
+    page: pymupdf.Page,
+    page_index: int,
+    page_height: float,
+    page_width: float,
+) -> list[_PageItem]:
+    items: list[_PageItem] = []
+    for ocr_line in ocr_page(page):
+        text = _normalize_spaces(ocr_line.text).strip()
+        if not text:
+            continue
+        x0, y0, x1, y1 = ocr_line.bbox
+        line = _Line(
+            text=text,
+            size=ocr_line.size,
+            bbox=(x0, y0, x1, y1),
+            page_index=page_index,
+            page_height=page_height,
+            flags=0,
+        )
+        items.append(
+            _PageItem(
+                y=y0 + page_index * 10_000,
+                x=x0,
+                kind="text",
+                line=line,
+                page_width=page_width,
+            )
+        )
+    return items
+
+
+def _unit_from_item(item: _PageItem, page_width: float) -> PageUnit:
+    line = item.line
+    if line is not None:
+        return PageUnit(
+            y=item.y,
+            x=item.x,
+            kind="text",
+            text=line.text,
+            size=line.size,
+            bbox=line.bbox,
+            page_index=line.page_index,
+            page_height=line.page_height,
+            page_width=page_width,
+            flags=line.flags,
+            cells=list(line.cells),
+        )
+    image = item.image
+    x0 = item.x
+    y0 = item.y
+    width = float(image.width) if image is not None else 1.0
+    height = float(image.height) if image is not None else 1.0
+    return PageUnit(
+        y=item.y,
+        x=item.x,
+        kind="image",
+        bbox=(x0, y0, x0 + width, y0 + height),
+        page_width=page_width,
+        image=image,
+    )
+
+
+def _line_from_unit(unit: PageUnit) -> _Line:
+    return _Line(
+        text=unit.text,
+        size=unit.size,
+        bbox=unit.bbox,
+        page_index=unit.page_index,
+        page_height=unit.page_height,
+        flags=unit.flags,
+        cells=list(unit.cells),
+    )
 
 
 def _line_from_spans(line: dict, page_index: int, page_height: float) -> _Line | None:
@@ -196,6 +376,7 @@ def _line_from_spans(line: dict, page_index: int, page_height: float) -> _Line |
         page_index=page_index,
         page_height=page_height,
         flags=flags,
+        cells=cells_from_spans(spans, _normalize_spaces),
     )
 
 
@@ -301,6 +482,42 @@ def _tiny_or_decorative(width: int, height: int, page: pymupdf.Page) -> bool:
     return False
 
 
+def _is_substantial_cover(image: ImageAsset) -> bool:
+    return (
+        image.width >= _COVER_MIN_EDGE
+        and image.height >= _COVER_MIN_EDGE
+        and image.width * image.height >= _COVER_MIN_AREA
+    )
+
+
+def _choose_cover(doc: pymupdf.Document, images: list[ImageAsset]) -> ImageAsset | None:
+    for image in images:
+        if _is_substantial_cover(image):
+            return image
+    if doc.page_count < 1:
+        return None
+    return _render_page_cover(doc[0])
+
+
+def _render_page_cover(page: pymupdf.Page) -> ImageAsset | None:
+    try:
+        zoom = min(2.0, 1200 / max(page.rect.width, 1))
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+        data = pix.tobytes("jpeg")
+    except Exception:
+        return None
+    if not data:
+        return None
+    return ImageAsset(
+        uid="cover",
+        file_name="cover.jpg",
+        media_type="image/jpeg",
+        data=data,
+        width=int(pix.width),
+        height=int(pix.height),
+    )
+
+
 def _repeated_running_text(lines: list[_Line], page_count: int) -> set[str]:
     if page_count < 3 or not lines:
         return set()
@@ -367,7 +584,7 @@ def _heading_level(size: float, heading_sizes: list[float], body_size: float, fl
 
 
 def _items_to_blocks(
-    items: list[_PageItem],
+    items: list[PageUnit | Block],
     repeats: set[str],
     body_size: float,
     heading_sizes: list[float],
@@ -393,13 +610,17 @@ def _items_to_blocks(
         pending = []
 
     for item in items:
+        if isinstance(item, Block):
+            flush()
+            blocks.append(item)
+            continue
         if item.kind == "image" and item.image is not None:
             flush()
             blocks.append(Block(kind="image", image=item.image))
             continue
-        line = item.line
-        if line is None:
+        if item.kind != "text" or not item.text:
             continue
+        line = _line_from_unit(item)
         if _is_page_number(line.text) or _running_key(line.text) in repeats:
             continue
         if not pending:
@@ -532,6 +753,8 @@ def _normalize_spaces(text: str) -> str:
 
 
 def document_preview(document: Document) -> dict:
+    chapters = document.chapters
+    first = chapters[0] if chapters else None
     return {
         "title": document.title,
         "author": document.author,
@@ -539,7 +762,37 @@ def document_preview(document: Document) -> dict:
         "page_count": document.page_count,
         "has_text": document.has_text,
         "image_count": len(document.images),
-        "chapter_count": len(document.chapters),
-        "chapters": [chapter.title for chapter in document.chapters],
+        "chapter_count": len(chapters),
+        "chapters": [chapter.title for chapter in chapters],
+        "preview_html": _preview_html(first) if first else "",
+        "has_cover": document.cover is not None,
     }
 
+
+def _preview_html(chapter: Chapter) -> str:
+    parts: list[str] = []
+    for block in chapter.blocks[:_PREVIEW_BLOCKS]:
+        if block.kind == "heading":
+            level = min(max(block.level, 1), 3)
+            parts.append(f"<h{level}>{html.escape(block.text)}</h{level}>")
+        elif block.kind == "paragraph" and block.text.strip():
+            text = block.text.strip()
+            if len(text) > _PREVIEW_PARA_CHARS:
+                text = text[:_PREVIEW_PARA_CHARS].rstrip() + "…"
+            parts.append(f"<p>{html.escape(text)}</p>")
+        elif block.kind == "table" and block.rows:
+            parts.append(_preview_table(block.rows))
+        elif block.kind == "image":
+            parts.append("<p>[image]</p>")
+    return "\n".join(parts)
+
+
+def _preview_table(rows: list[list[str]]) -> str:
+    parts = ["<table>"]
+    for row in rows[:8]:
+        parts.append("<tr>")
+        for cell in row:
+            parts.append(f"<td>{html.escape(cell)}</td>")
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)

@@ -57,6 +57,12 @@ def test_preview_reads_metadata(tmp_path: Path) -> None:
     assert info["page_count"] == 2
     assert info["has_text"] is True
     assert info["chapter_count"] >= 1
+    assert info["image_count"] >= 0
+    assert isinstance(info["chapters"], list)
+    assert info["chapters"]
+    assert isinstance(info["preview_html"], str)
+    assert info["preview_html"]
+    assert "<" in info["preview_html"]
 
 
 def test_encrypted_pdf_is_rejected(tmp_path: Path) -> None:

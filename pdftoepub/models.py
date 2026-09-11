@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-BlockKind = Literal["heading", "paragraph", "image"]
+BlockKind = Literal["heading", "paragraph", "image", "table"]
 
 
 @dataclass
@@ -22,6 +22,7 @@ class Block:
     text: str = ""
     level: int = 0
     image: ImageAsset | None = None
+    rows: list[list[str]] = field(default_factory=list)
 
 
 @dataclass
@@ -40,6 +41,7 @@ class Document:
     images: list[ImageAsset]
     has_text: bool
     source_name: str = ""
+    cover: ImageAsset | None = None
 
 
 class ConversionError(Exception):

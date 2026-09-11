@@ -51,6 +51,19 @@ p.first {
   max-width: 100%;
   height: auto;
 }
+table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: 100%;
+  text-indent: 0;
+}
+th, td {
+  border: 1px solid #bbb;
+  padding: 0.35em 0.6em;
+  text-align: left;
+  vertical-align: top;
+}
+th { font-weight: 700; }
 """.strip()
 
 
@@ -68,6 +81,8 @@ def write_epub(document: Document, destination: Path | str, progress: ProgressFn
     book.add_metadata("DC", "publisher", "PdfToEpub")
     if document.source_name:
         book.add_metadata("DC", "source", document.source_name)
+    if document.cover is not None:
+        book.set_cover(document.cover.file_name.split("/")[-1], document.cover.data)
 
     css = epub.EpubItem(
         uid="style",
@@ -123,7 +138,7 @@ def _chapter_html(chapter: Chapter) -> str:
             first_paragraph = True
         elif block.kind == "paragraph" and block.text.strip():
             first_paragraph = False
-        elif block.kind == "image":
+        elif block.kind in {"image", "table"}:
             first_paragraph = True
     return "\n".join(part for part in parts if part)
 
@@ -132,12 +147,26 @@ def _render_block(block: Block, first_paragraph: bool) -> str:
     if block.kind == "image" and block.image is not None:
         src = html.escape(block.image.file_name)
         return f'<p class="figure first"><img src="{src}" alt=""/></p>'
+    if block.kind == "table" and block.rows:
+        return _render_table(block.rows)
     text = html.escape(block.text)
     if block.kind == "heading":
         level = min(max(block.level, 1), 3)
         return f"<h{level}>{text}</h{level}>"
     css_class = ' class="first"' if first_paragraph else ""
     return f"<p{css_class}>{text}</p>"
+
+
+def _render_table(rows: list[list[str]]) -> str:
+    parts = ["<table>"]
+    for index, row in enumerate(rows):
+        tag = "th" if index == 0 else "td"
+        parts.append("<tr>")
+        for cell in row:
+            parts.append(f"<{tag}>{html.escape(cell)}</{tag}>")
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
 
 
 def default_output_path(source_name: str, output_dir: Path | None = None) -> Path:
