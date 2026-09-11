@@ -1,0 +1,29 @@
+[project]
+name = "pdftoepub"
+version = "0.1.0"
+description = "Convert PDF documents into reflowable EPUB books"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pymupdf>=1.25.0",
+    "ebooklib>=0.18",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+pdftoepub = "pdftoepub.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pdftoepub*"]
+
+[tool.setuptools.package-data]
+pdftoepub = ["static/*"]

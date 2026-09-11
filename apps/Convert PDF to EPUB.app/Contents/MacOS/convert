@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../../../.." && pwd)"
+BIN="$REPO/.venv/bin/pdftoepub"
+
+if [[ ! -x "$BIN" ]]; then
+  osascript -e 'display dialog "PdfToEpub is not installed yet. Double-click “Convert PDF to EPUB.command” in the project folder once to set it up." buttons {"OK"} default button "OK" with title "PdfToEpub"'
+  exit 1
+fi
+
+if [[ $# -eq 0 ]]; then
+  osascript <<EOF
+tell application "Terminal"
+  do script "cd $(printf %q "$REPO") && source .venv/bin/activate && pdftoepub"
+  activate
+end tell
+EOF
+  exit 0
+fi
+
+"$BIN" convert --open --skip-existing "$@"
+code=$?
+if [[ $code -ne 0 ]]; then
+  osascript -e 'display dialog "Conversion failed. Check that the file is a readable PDF." buttons {"OK"} default button "OK" with title "PdfToEpub"'
+fi
+exit $code
