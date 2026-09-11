@@ -4,20 +4,21 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../../.." && pwd)"
 BIN="$REPO/.venv/bin/pdftoepub"
+PYTHON="${PYTHON:-/usr/bin/python3}"
 
 if [[ ! -x "$BIN" ]]; then
-  osascript -e 'display dialog "PdfToEpub is not installed yet. Double-click “Convert PDF to EPUB.command” in the project folder once to set it up." buttons {"OK"} default button "OK" with title "PdfToEpub"'
-  exit 1
+  osascript -e 'display notification "Setting up PdfToEpub…" with title "PdfToEpub"'
+  "$PYTHON" -m venv "$REPO/.venv"
+  "$REPO/.venv/bin/pip" install -e "$REPO"
 fi
 
 if [[ $# -eq 0 ]]; then
-  osascript <<EOF
-tell application "Terminal"
-  do script "cd $(printf %q "$REPO") && source .venv/bin/activate && pdftoepub"
-  activate
-end tell
-EOF
-  exit 0
+  if curl -sf -o /dev/null --connect-timeout 1 "http://127.0.0.1:8765/" \
+    || lsof -nP -iTCP:8765 -sTCP:LISTEN >/dev/null 2>&1; then
+    open "http://127.0.0.1:8765"
+    exit 0
+  fi
+  exec "$BIN" serve --open
 fi
 
 "$BIN" convert --open --skip-existing "$@"

@@ -6,19 +6,45 @@ The converter extracts text in reading order, rebuilds paragraphs, detects headi
 
 ## Install
 
+From this folder:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
+Or with [pipx](https://pipx.pypa.io/), so `pdftoepub` is on your PATH:
+
+```bash
+pipx install .
+# or: pipx install /path/to/PdfToEpub
+```
+
+The web UI only works while the local server is running (`pdftoepub serve`, the `.command` launcher, or the login service below). Watch-folder conversion does not need the UI.
+
+### Login service (macOS)
+
+Start the web UI automatically when you log in:
+
+```bash
+pdftoepub install-service
+# or: ./scripts/install-service.sh
+```
+
+That writes `~/Library/LaunchAgents/com.pdftoepub.serve.plist` and loads it. The converter is then at [http://127.0.0.1:8765](http://127.0.0.1:8765). Remove it with `pdftoepub uninstall-service` (or `./scripts/uninstall-service.sh`).
+
+### Install for yourself
+
+A local venv or pipx install is enough. There is no Homebrew formula to publish.
+
 ## Easiest ways to convert
 
-**Double-click** `Convert PDF to EPUB.command` (or run `pdftoepub`). That opens the web UI in your browser — pick one PDF and it downloads the EPUB.
+**Double-click** `Convert PDF to EPUB.command` (or run `pdftoepub`). That opens the web UI in your browser — pick one PDF and it downloads the EPUB. If the server is already on port 8765, the launcher just opens that URL.
 
 **Drag and drop** PDFs onto `apps/Convert PDF to EPUB.app`. The EPUB is saved next to the PDF and revealed in Finder.
 
-**Watch folder:** drop PDFs into `inbox/`. They are converted into `outbox/` automatically.
+**Watch folder:** drop PDFs into `inbox/`. They are converted into `outbox/` automatically. This still works without the web UI.
 
 ```bash
 pdftoepub watch
@@ -42,12 +68,13 @@ Running `pdftoepub` with no arguments opens the web UI. `pdftoepub menu` shows t
 pdftoepub book.pdf
 pdftoepub folder-of-pdfs/
 pdftoepub book.pdf --open
+pdftoepub book.pdf --open-books
 pdftoepub convert book.pdf -o book.epub --title "My Book" --author "Jane Doe"
 pdftoepub preview book.pdf
 pdftoepub watch ~/Desktop/ToConvert --out-dir ~/Desktop/EPUBs
 ```
 
-`--open` reveals the result in Finder. `--skip-existing` leaves PDFs alone if a newer EPUB is already there. `--no-images` skips embedded figures.
+`--open` reveals the result in Finder. `--open-books` opens the EPUB in the Books app on macOS. `--skip-existing` leaves PDFs alone if a newer EPUB is already there. `--no-images` skips embedded figures.
 
 ## What converts well
 

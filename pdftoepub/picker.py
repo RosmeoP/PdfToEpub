@@ -37,6 +37,14 @@ def reveal(path: Path) -> None:
     subprocess.run(["xdg-open", str(path.parent)], check=False)
 
 
+def open_in_books(path: Path) -> None:
+    path = Path(path)
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-a", "Books", str(path)], check=False)
+        return
+    reveal(path)
+
+
 def notify(title: str, message: str) -> None:
     if sys.platform == "darwin":
         script = f'display notification "{_escape(message)}" with title "{_escape(title)}"'

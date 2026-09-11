@@ -13,18 +13,32 @@ from pdftoepub.jobs import (
     convert_many,
 )
 from pdftoepub.models import ConversionError
-from pdftoepub.picker import notify, pick_folder, pick_pdfs, reveal
+from pdftoepub.picker import notify, open_in_books, pick_folder, pick_pdfs, reveal
+from pdftoepub.service import DEFAULT_URL, install_service, uninstall_service
 
-COMMANDS = {"convert", "preview", "serve", "watch", "menu"}
+COMMANDS = {"convert", "preview", "serve", "watch", "menu", "install-service", "uninstall-service"}
+IMPLICIT_CONVERT_FLAGS = {
+    "-o",
+    "--output",
+    "--out-dir",
+    "--title",
+    "--author",
+    "--no-images",
+    "--open",
+    "--open-books",
+    "--skip-existing",
+}
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+def normalize_argv(argv: list[str]) -> list[str]:
     if not argv:
-        return _serve("127.0.0.1", 8765, open_browser=True)
-    if argv[0] not in COMMANDS and (not argv[0].startswith("-") or argv[0] in {"-o", "--output", "--out-dir", "--title", "--author", "--no-images", "--open", "--skip-existing"}):
-        argv = ["convert", *argv]
+        return argv
+    if argv[0] not in COMMANDS and (not argv[0].startswith("-") or argv[0] in IMPLICIT_CONVERT_FLAGS):
+        return ["convert", *argv]
+    return argv
 
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pdftoepub",
         description="Convert PDFs into EPUB books. Run with no arguments for a simple menu.",
@@ -49,12 +63,31 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("menu", help="Interactive menu for files, folders, and watch mode")
 
-    args = parser.parse_args(argv)
+    install = sub.add_parser("install-service", help="Install a login LaunchAgent for the web UI (macOS)")
+    install.add_argument("--dest", type=Path, help="Directory or plist path (default: ~/Library/LaunchAgents)")
+    install.add_argument("--no-load", action="store_true", help="Write the plist without calling launchctl")
+
+    uninstall = sub.add_parser("uninstall-service", help="Remove the login LaunchAgent (macOS)")
+    uninstall.add_argument("--dest", type=Path, help="Directory or plist path (default: ~/Library/LaunchAgents)")
+    uninstall.add_argument("--no-load", action="store_true", help="Remove the plist without calling launchctl")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return _serve("127.0.0.1", 8765, open_browser=True)
+    argv = normalize_argv(argv)
+    args = build_parser().parse_args(argv)
 
     if args.command == "menu":
         return _interactive()
     if args.command == "serve":
         return _serve(args.host, args.port, args.open)
+    if args.command == "install-service":
+        return _install_service(args)
+    if args.command == "uninstall-service":
+        return _uninstall_service(args)
     if args.command == "preview":
         return _preview(args.pdf)
     if args.command == "watch":
@@ -67,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             not args.no_images,
             args.open,
             args.skip_existing,
+            open_books=args.open_books,
         )
     return _convert_command(args)
 
@@ -78,7 +112,30 @@ def _add_convert_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--author", help="Override the author name")
     parser.add_argument("--no-images", action="store_true", help="Skip embedded images")
     parser.add_argument("--open", action="store_true", help="Reveal the result in Finder")
+    parser.add_argument("--open-books", action="store_true", help="Open the EPUB in Books (macOS)")
     parser.add_argument("--skip-existing", action="store_true", help="Skip PDFs that already have a newer EPUB")
+
+
+def _install_service(args: argparse.Namespace) -> int:
+    if sys.platform != "darwin" and not args.no_load:
+        print("install-service is only supported on macOS.", file=sys.stderr)
+        return 1
+    path = install_service(dest=args.dest, load=not args.no_load)
+    print(f"LaunchAgent: {path}")
+    print(f"URL: {DEFAULT_URL}")
+    return 0
+
+
+def _uninstall_service(args: argparse.Namespace) -> int:
+    if sys.platform != "darwin" and not args.no_load:
+        print("uninstall-service is only supported on macOS.", file=sys.stderr)
+        return 1
+    path = uninstall_service(dest=args.dest, load=not args.no_load)
+    if path is None:
+        print("LaunchAgent is not installed.")
+    else:
+        print(f"Removed LaunchAgent: {path}")
+    return 0
 
 
 def _interactive() -> int:
@@ -134,6 +191,7 @@ def _convert_command(args: argparse.Namespace) -> int:
         include_images=not args.no_images,
         skip_existing=args.skip_existing,
         open_result=args.open,
+        open_books=args.open_books,
     )
 
 
@@ -147,6 +205,7 @@ def _run_jobs(
     include_images: bool = True,
     skip_existing: bool = False,
     open_result: bool = False,
+    open_books: bool = False,
 ) -> int:
     pdfs, errors = collect_pdfs(paths)
     for message in errors:
@@ -167,7 +226,7 @@ def _run_jobs(
     except ConversionError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    return _report(results, open_result=open_result)
+    return _report(results, open_result=open_result, open_books=open_books)
 
 
 def _cli_progress(percent: int, message: str) -> None:
@@ -179,7 +238,7 @@ def _cli_progress(percent: int, message: str) -> None:
         print(file=sys.stderr)
 
 
-def _report(results: list[JobResult], *, open_result: bool) -> int:
+def _report(results: list[JobResult], *, open_result: bool, open_books: bool = False) -> int:
     written: list[Path] = []
     failed = 0
     for index, result in enumerate(results, start=1):
@@ -196,6 +255,8 @@ def _report(results: list[JobResult], *, open_result: bool) -> int:
             written.append(result.output)
     if open_result and written:
         reveal(written[-1])
+    if open_books and written:
+        open_in_books(written[-1])
     if written:
         notify("PdfToEpub", f"Converted {len(written)} file{'s' if len(written) != 1 else ''}.")
     if failed:
@@ -235,6 +296,8 @@ def _watch(
     include_images: bool,
     open_result: bool,
     skip_existing: bool,
+    *,
+    open_books: bool = False,
 ) -> int:
     watch_dir = Path(folder) if folder is not None else DEFAULT_INBOX
     watch_dir.mkdir(parents=True, exist_ok=True)
@@ -268,6 +331,7 @@ def _watch(
                             include_images=include_images,
                             skip_existing=True,
                             open_result=open_result,
+                            open_books=open_books,
                         )
                 else:
                     seen[pdf] = stamp
