@@ -11,8 +11,13 @@
 </head>
 <body>
   <div class="page">
+    <div id="offline-banner" class="banner hidden" role="alert">
+      <strong>The converter is not running</strong>
+      <p>This is not a problem with your PDF. Start the local app with <code>pdftoepub serve --open</code>, or double-click <code>Convert PDF to EPUB.command</code>, then try again.</p>
+    </div>
+
     <header class="masthead">
-      <p class="kicker">One PDF at a time</p>
+      <p class="kicker">Local converter</p>
       <h1>PdfToEpub</h1>
       <p class="lede">Choose a PDF, convert it, and the EPUB downloads to your computer. Nothing is uploaded anywhere else.</p>
     </header>
@@ -20,18 +25,18 @@
     <main>
       <form id="convert-form" class="panel">
         <label id="dropzone" class="dropzone">
-          <input id="file-input" class="dropzone-input" type="file" accept="application/pdf,.pdf">
+          <input id="file-input" class="dropzone-input" type="file" accept="application/pdf,.pdf" multiple>
           <span class="drop-mark">PDF</span>
           <strong id="drop-title">Choose a PDF</strong>
-          <span id="drop-hint">PDF only, up to 80 MB. Click to browse or drop a file here</span>
+          <span id="drop-hint">PDF only, up to 80 MB each. Click to browse or drop one or more files</span>
         </label>
 
         <div id="meta" class="meta hidden">
-          <label>
+          <label id="title-field">
             Title
             <input id="title-input" name="title" type="text" autocomplete="off" placeholder="Book title">
           </label>
-          <label>
+          <label id="author-field">
             Author
             <input id="author-input" name="author" type="text" autocomplete="off" placeholder="Author">
           </label>
@@ -41,7 +46,18 @@
           </label>
         </div>
 
-        <div id="preview" class="preview hidden"></div>
+        <div id="preview" class="preview hidden">
+          <h2>Detected structure</h2>
+          <p id="preview-stats"></p>
+          <div id="preview-text" class="preview-text"></div>
+          <div id="chapter-editor" class="chapter-editor">
+            <h2>Chapters</h2>
+            <p class="chapter-hint">Rename or remove a chapter before converting.</p>
+            <ul id="chapter-list" class="chapter-list"></ul>
+          </div>
+        </div>
+
+        <ul id="queue" class="queue hidden"></ul>
 
         <div id="progress" class="progress hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Conversion progress">
           <div class="progress-track">
@@ -53,11 +69,13 @@
           </div>
         </div>
 
-        <p id="status" class="status" role="status">Pick one PDF to get started.</p>
+        <p id="status" class="status" role="status">Pick one PDF to get started. You can also drop several.</p>
 
         <div class="actions">
           <button id="convert-btn" type="submit" disabled>Convert and download</button>
           <a id="download-link" class="download hidden">Download again</a>
+          <button id="open-books-btn" type="button" class="secondary hidden">Open in Books</button>
+          <a id="zip-link" class="download secondary hidden">Download all as zip</a>
         </div>
       </form>
     </main>
@@ -74,13 +92,13 @@
             <ul>
               <li>Text-based PDFs from Word, InDesign, LaTeX, or most ebooks</li>
               <li>Documents with a clear heading size for chapter splits</li>
-              <li>One PDF at a time; files stay on this computer</li>
+              <li>One PDF, or a short queue; files stay on this computer</li>
             </ul>
           </div>
           <div>
             <h3>Will not</h3>
             <ul>
-              <li>Scanned PDFs — no OCR; pages may be kept as images</li>
+              <li>Scanned PDFs — OCR runs if Tesseract is installed; otherwise pages may be kept as images</li>
               <li>Password-protected files (they are rejected)</li>
               <li>Uploads larger than 80 MB</li>
               <li>Exact page design: columns, tables, footnotes, magazines</li>
@@ -91,9 +109,10 @@
         <h3>Also know</h3>
         <ul class="limits-notes">
           <li>Chapters are guessed from font size and can split in the wrong place</li>
+          <li>You can edit the title, author, and chapter names before converting</li>
           <li>Repeated headers, footers, and page numbers are stripped heuristically</li>
           <li>Tiny or decorative images are skipped; you can turn images off</li>
-          <li>Preview and convert each re-read the PDF — preview is not a quality guarantee</li>
+          <li>Preview is cached for this session so convert can reuse it — it is not a quality guarantee</li>
         </ul>
       </details>
     </footer>
