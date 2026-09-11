@@ -169,7 +169,15 @@ def _render_table(rows: list[list[str]]) -> str:
     return "".join(parts)
 
 
-def default_output_path(source_name: str, output_dir: Path | None = None) -> Path:
+def default_output_path(
+    source_name: str,
+    output_dir: Path | None = None,
+    *,
+    title: str | None = None,
+) -> Path:
+    if title and str(title).strip():
+        # Flatten path separators so a renamed title cannot become a nested path.
+        source_name = re.sub(r"[/\\]+", " ", str(title).strip())
     stem = Path(source_name).stem or "document"
     safe = re.sub(r"[^\w\s-]", "", stem).strip() or "document"
     name = f"{safe}.epub"

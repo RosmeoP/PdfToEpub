@@ -121,7 +121,10 @@ async def api_start_job(
         return JSONResponse({"error": str(exc)}, status_code=400)
     _forget_old_state()
     source_name = name or _extract_name(extract_id.strip()) or "document.pdf"
-    job = Job(id=uuid.uuid4().hex, filename=default_output_path(source_name).name)
+    job = Job(
+        id=uuid.uuid4().hex,
+        filename=default_output_path(source_name, title=title or None).name,
+    )
     with _jobs_lock:
         _jobs[job.id] = job
     thread = threading.Thread(
@@ -267,13 +270,13 @@ async def api_convert(
     except ConversionError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     with tempfile.TemporaryDirectory(prefix="pdftoepub-") as tmp:
-        destination = default_output_path(source_name, Path(tmp))
+        destination = default_output_path(source_name, Path(tmp), title=title or None)
         try:
             written = _write_converted_document(document, destination)
             payload = written.read_bytes()
         except ConversionError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-    download_name = default_output_path(source_name).name
+    download_name = default_output_path(source_name, title=title or None).name
     encoded = quote(download_name)
     return StreamingResponse(
         io.BytesIO(payload),
@@ -308,7 +311,7 @@ def _run_job(
         current.message = message
 
     with tempfile.TemporaryDirectory(prefix="pdftoepub-") as tmp:
-        destination = default_output_path(name, Path(tmp))
+        destination = default_output_path(name, Path(tmp), title=title)
         try:
             document, source_name = _document_for_convert(
                 data,
@@ -320,10 +323,10 @@ def _run_job(
                 chapters,
                 progress=on_progress,
             )
-            destination = default_output_path(source_name, Path(tmp))
+            destination = default_output_path(source_name, Path(tmp), title=title)
             written = _write_converted_document(document, destination, progress=on_progress)
             job.payload = written.read_bytes()
-            job.filename = default_output_path(source_name).name
+            job.filename = default_output_path(source_name, title=title).name
             job.percent = 100
             job.message = "Finished"
             job.status = "done"

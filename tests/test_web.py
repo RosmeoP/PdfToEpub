@@ -183,6 +183,7 @@ def test_convert_from_extract_uses_edits(tmp_path: Path) -> None:
     )
     assert converted.status_code == 200
     assert converted.content[:2] == b"PK"
+    assert "New Title.epub" in converted.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(converted.content)) as archive:
         names = archive.namelist()
         opf = next(name for name in names if name.endswith(".opf"))
@@ -194,6 +195,42 @@ def test_convert_from_extract_uses_edits(tmp_path: Path) -> None:
     if info["chapter_count"] >= 2:
         assert len(chapter_files) == 1
         assert "By noon the current" not in chapter_html
+
+
+def test_edited_title_sets_download_filename(tmp_path: Path) -> None:
+    pdf = _make_pdf(tmp_path / "river-stories.pdf")
+    client = TestClient(app)
+    preview = client.post(
+        "/api/preview",
+        files={"file": ("river-stories.pdf", pdf.read_bytes(), "application/pdf")},
+    )
+    assert preview.status_code == 200
+    extract_id = preview.json()["extract_id"]
+
+    started = client.post(
+        "/api/jobs",
+        data={
+            "extract_id": extract_id,
+            "title": "Custom River Book",
+            "author": "Ada Ferry",
+            "include_images": "true",
+        },
+    )
+    assert started.status_code == 200
+    job_id = started.json()["id"]
+    job = _wait_for_job(client, job_id)
+    assert job["status"] == "done"
+    assert job["filename"] == "Custom River Book.epub"
+    assert job["filename"] != "river-stories.epub"
+
+    downloaded = client.get(f"/api/jobs/{job_id}/file")
+    assert downloaded.status_code == 200
+    disposition = downloaded.headers["content-disposition"]
+    assert "Custom River Book.epub" in disposition
+    assert "river-stories.epub" not in disposition
+    with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
+        opf = next(name for name in archive.namelist() if name.endswith(".opf"))
+        assert "Custom River Book" in archive.read(opf).decode("utf-8")
 
 
 def test_jobs_from_extract_and_open_books(tmp_path: Path) -> None:

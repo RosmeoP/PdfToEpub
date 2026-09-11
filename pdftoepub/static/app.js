@@ -66,6 +66,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function epubNameFromTitle(title) {
+  const flattened = String(title || "").trim().replace(/[/\\]+/g, " ");
+  if (!flattened) return "";
+  const safe = flattened.replace(/[^\w\s-]/g, "").trim();
+  return safe ? `${safe}.epub` : "";
+}
+
 function resetDownloads() {
   if (lastDownloadUrl) {
     URL.revokeObjectURL(lastDownloadUrl);
@@ -398,7 +405,7 @@ async function convertSingle(file) {
   if (!fileResponse.ok) await readError(fileResponse);
   const blob = await fileResponse.blob();
   lastDownloadUrl = URL.createObjectURL(blob);
-  const filename = job.filename || file.name.replace(/\.pdf$/i, ".epub");
+  const filename = job.filename || epubNameFromTitle(titleInput.value) || file.name.replace(/\.pdf$/i, ".epub");
   downloadLink.href = lastDownloadUrl;
   downloadLink.download = filename;
   downloadLink.classList.remove("hidden");
